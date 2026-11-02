@@ -53,3 +53,10 @@ def test_postgres() -> bool:
     except Exception as e:
         print(f"PostgreSQL connection failed: {e}")
         return False
+    
+if __name__ == "__main__":
+    print("=== PostgreSQL health-check ===")
+    if test_postgres():
+        print("PostgreSQL is available.")
+    else:
+        print("PostgreSQL is NOT available.")
