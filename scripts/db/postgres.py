@@ -60,3 +60,10 @@ if __name__ == "__main__":
         print("PostgreSQL is available.")
     else:
         print("PostgreSQL is NOT available.")
+        
+def execute_many(query: str, params_seq: list[tuple]) -> int:
+    """Execute one query with a sequence of parameter sets; return rows sent."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(query, params_seq)
+            return len(params_seq)
