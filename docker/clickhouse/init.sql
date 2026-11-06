@@ -14,3 +14,17 @@ CREATE TABLE IF NOT EXISTS dwd_call_center_requests_scd2
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(valid_from)
 ORDER BY (request_id, valid_from);
+
+-- ODS: сырые данные из источника, append-only
+CREATE TABLE IF NOT EXISTS ods_call_center_requests
+(
+    id UInt64,
+    client_phone String,
+    operator_id UInt32,
+    status String,
+    created_at DateTime,
+    updated_at DateTime,
+    _loaded_at DateTime DEFAULT now()
+)
+ENGINE = MergeTree()
+ORDER BY (id, updated_at);

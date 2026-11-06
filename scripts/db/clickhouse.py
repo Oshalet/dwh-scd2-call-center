@@ -6,6 +6,8 @@ from scripts.config import CH_CONFIG
 
 from contextlib import contextmanager
 
+from typing import List, Dict, Optional
+
 @contextmanager
 def get_client():
     """Context manager: yields a ClickHouse client, closes it on exit."""
@@ -15,19 +17,19 @@ def get_client():
     finally:
         conn.close()
 
-def fetch_all(query: str, parameters: dict | None = None) -> list[dict]:
+def fetch_all(query: str, parameters: Optional[Dict] = None) -> List[Dict]:
     """Execute SELECT; return list of dicts."""
     with get_client() as client:
         result = client.query(query=query, parameters=parameters or {})
         columns = result.column_names
         return [dict(zip(columns, row)) for row in result.result_rows]
 
-def fetch_one(query: str, parameters: dict | None =None) -> dict | None:
+def fetch_one(query: str, parameters: Optional[Dict] = None) -> Optional[Dict]:
     """Execute SELECT; return first row as dict, or None if empty."""
     rows = fetch_all(query=query,parameters=parameters)
     return rows[0] if rows else None 
 
-def insert_rows(table: str, rows: list[dict], columns: list[str]) -> int:
+def insert_rows(table: str, rows: List[Dict], columns: List[str]) -> int:
     """Insert a batch of rows; return number of inserted rows."""
     if not rows:
         return 0

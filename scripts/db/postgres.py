@@ -6,6 +6,8 @@ from scripts.config import PG_CONFIG
 
 from contextlib import contextmanager
 
+from typing import List, Dict, Optional
+
 @contextmanager
 def get_connection():
     """Open a connection to PostgreSQL. commit on success, rollback on error, always close."""
@@ -27,7 +29,7 @@ def execute(query: str, params: tuple = ()) -> int:
             cur.execute(query,params)
             return cur.rowcount
 
-def fetch_all(query:str, params: tuple = ()) -> list[dict]:
+def fetch_all(query:str, params: tuple = ()) -> List[dict]:
     """Execute SELECT; return list of dicts."""
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -35,7 +37,7 @@ def fetch_all(query:str, params: tuple = ()) -> list[dict]:
             columns = [desc[0] for desc in cur.description]
             return [dict(zip(columns,row)) for row in cur.fetchall()]
         
-def fetch_one(query: str, params: tuple = ()) -> dict | None:
+def fetch_one(query: str, params: tuple = ()) -> Optional[Dict]:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(query, params)
