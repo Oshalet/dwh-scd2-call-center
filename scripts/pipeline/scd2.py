@@ -42,49 +42,48 @@ def ods_to_dataframe(spark: SparkSession) -> "pyspark.sql.DataFrame":
     
     return spark.createDataFrame(rows)
 
-
 def dwd_to_dataframe(spark: SparkSession) -> "pyspark.sql.DataFrame":
-    """Read current DWD table into Spark DataFrame."""
+    """Read current DWD table into Spark DataFrame with explicit schema."""
+    
+    # Определяем схему явно один раз
+    schema = StructType([
+        StructField("request_id", LongType(), nullable=False),
+        StructField("client_phone", StringType(), nullable=True),
+        StructField("operator_id", IntegerType(), nullable=True),
+        StructField("status", StringType(), nullable=True),
+        StructField("created_at", TimestampType(), nullable=True),
+        StructField("updated_at", TimestampType(), nullable=True),
+        StructField("valid_from", TimestampType(), nullable=True),
+        StructField("valid_to", TimestampType(), nullable=True),  # Ключевой момент: nullable=True
+        StructField("is_active", IntegerType(), nullable=True),
+    ])
+    
     rows = fetch_all(f"SELECT * FROM {DWD_TABLE}")
     
     if not rows:
-        schema = StructType([
-            StructField("request_id", LongType()),
-            StructField("client_phone", StringType()),
-            StructField("operator_id", IntegerType()),
-            StructField("status", StringType()),
-            StructField("created_at", TimestampType()),
-            StructField("updated_at", TimestampType()),
-            StructField("valid_from", TimestampType()),
-            StructField("valid_to", TimestampType()),
-            StructField("is_active", IntegerType()),
-        ])
         return spark.createDataFrame([], schema)
+
     
-    return spark.createDataFrame(rows)
+    return spark.createDataFrame(rows, schema=schema)
 
 
 def apply_scd2(ods_df: "pyspark.sql.DataFrame", dwd_df: "pyspark.sql.DataFrame") -> "pyspark.sql.DataFrame":
     """
-    Apply SCD Type 2 logic.
-    Strategy:
-    1. Identify new requests (not in DWD active).
-    2. Identify changed requests (in DWD active, but status differs).
-    3. Unchanged = Active DWD - Changed IDs.
-    4. Build final table by combining inactive history + closed versions + unchanged actives + new actives.
+    Apply SCD Type 2 logic using window functions for robustness.
     """
     
-    # 1. Текущее состояние из ODS (последняя версия каждой заявки)
+    # 1. Получаем самую свежую версию каждой заявки из ODS
+    # Используем row_number() PARTITION BY id ORDER BY updated_at DESC
+    from pyspark.sql.window import Window
+    
+    w_spec = Window.partitionBy("id").orderBy(F.col("updated_at").desc())
+    
     ods_latest = (
         ods_df
-        .groupBy("id")
-        .agg(
-            F.first("client_phone").alias("client_phone"),
-            F.first("operator_id").alias("operator_id"),
-            F.first("status").alias("status"),
-            F.first("created_at").alias("created_at"),
-            F.max("updated_at").alias("updated_at"),
-        )
+        .withColumn("rn", F.row_number().over(w_spec))
+        .filter(F.col("rn") == 1)
+        .drop("rn")
+        # Переименуем колонки под ожидаемые имена для join, если нужно, но здесь они совпадают
     )
     
     # 2. Активные версии в DWD
@@ -92,7 +91,7 @@ def apply_scd2(ods_df: "pyspark.sql.DataFrame", dwd_df: "pyspark.sql.DataFrame")
     
     # --- ЛОГИКА ИЗМЕНЕНИЙ ---
     
-    # Join ODS latest с DWD active, чтобы найти отличия
+    # Join ODS latest с DWD active
     joined_state = ods_latest.alias("ods").join(
         dwd_active.alias("dwd"),
         F.col("ods.id") == F.col("dwd.request_id"),
@@ -102,13 +101,12 @@ def apply_scd2(ods_df: "pyspark.sql.DataFrame", dwd_df: "pyspark.sql.DataFrame")
     # Заявки, которые ЕСТЬ в обоих, но статус разный -> CHANGED
     changed_ids_df = joined_state.filter(F.col("ods.status") != F.col("dwd.status")).select(F.col("ods.id").alias("changed_id"))
     
-    # Список ID всех изменённых заявок (для фильтрации unchanged)
+    # Список ID всех изменённых заявок
     changed_ids_list = [row.changed_id for row in changed_ids_df.collect()]
     
     # --- ПОСТРОЕНИЕ РЕЗУЛЬТАТОВ ---
     
     # A. Новые заявки (в ODS, но нет в DWD active)
-    # Используем left_anti join напрямую с ods_latest и dwd_active
     new_requests_df = ods_latest.join(dwd_active, ods_latest.id == dwd_active.request_id, "left_anti")
     
     new_versions = new_requests_df.select(
@@ -123,24 +121,23 @@ def apply_scd2(ods_df: "pyspark.sql.DataFrame", dwd_df: "pyspark.sql.DataFrame")
         F.lit(1).alias("is_active"),
     )
     
-    # B. Изменённые заявки: закрываем старые версии
-    # Берём данные из joined_state, где статусы разные
+    # B. Изменённые заявки
     changed_rows_full = joined_state.filter(F.col("ods.status") != F.col("dwd.status"))
     
-    # Закрываем старую версию (берём поля из dwd side, ставим valid_to = updated_at из ods side)
+    # Закрываем старую версию
     closed_versions = changed_rows_full.select(
         F.col("dwd.request_id"),
         F.col("dwd.client_phone"),
         F.col("dwd.operator_id"),
         F.col("dwd.status"),       # Старый статус
         F.col("dwd.created_at"),
-        F.col("dwd.updated_at"),   # Старое время апдейта (не важно, перезапишем valid_to)
+        F.col("dwd.updated_at"),   
         F.col("dwd.valid_from"),
         F.col("ods.updated_at").alias("valid_to"), # Новое время закрытия
         F.lit(0).alias("is_active"),
     )
     
-    # Создаём новую активную версию для изменённых
+    # Создаём новую активную версию
     new_active_versions = changed_rows_full.select(
         F.col("ods.id").alias("request_id"),
         F.col("ods.client_phone"),
@@ -153,14 +150,13 @@ def apply_scd2(ods_df: "pyspark.sql.DataFrame", dwd_df: "pyspark.sql.DataFrame")
         F.lit(1).alias("is_active"),
     )
     
-    # C. Неизменённые заявки (Active DWD минус Changed IDs)
-    # Фильтруем dwd_active, исключая те, чьи ID есть в списке changed
+    # C. Неизменённые заявки
     if changed_ids_list:
         unchanged = dwd_active.filter(~F.col("request_id").isin(changed_ids_list))
     else:
         unchanged = dwd_active
         
-    # D. Исторические неактивные версии (остались как есть)
+    # D. Исторические неактивные версии
     dwd_inactive = dwd_df.filter(F.col("is_active") == 0)
     
     # --- ОБЪЕДИНЕНИЕ ---

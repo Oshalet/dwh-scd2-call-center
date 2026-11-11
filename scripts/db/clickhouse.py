@@ -38,6 +38,11 @@ def insert_rows(table: str, rows: List[Dict], columns: List[str]) -> int:
         client.insert(table=table, data=data, column_names=columns)
         return len(rows)
     
+def execute(query: str) -> None:
+    """Execute a single command (DDL/DML) without returning results."""
+    with get_client() as client:
+        client.command(query)
+    
 def test_clickhouse() -> bool:
     """Check DB availability; return True if everything is fine."""
     try:

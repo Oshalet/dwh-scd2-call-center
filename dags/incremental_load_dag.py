@@ -7,6 +7,7 @@ from airflow.models import Variable
 
 from scripts.pipeline.extract import extract_delta
 from scripts.pipeline.scd2 import transform_scd2
+from scripts.pipeline.load_marts import refresh_marts 
 
 DAG_ID = "incremental_load"
 WATERMARK_KEY = f"wm_{DAG_ID}"
@@ -44,15 +45,22 @@ def apply_scd2_transformation(**context):
     print(f"DWD table now contains {n_rows} rows")
     return n_rows
 
+def load_data_marts(**context):
+    """Task 3: Refresh aggregated data marts from DWD."""
+    print("Starting Data Mart refresh: DWD → DWS")
+    refresh_marts()
+    print("Data Marts refreshed successfully.")
+    return True
+
 
 with DAG(
     dag_id=DAG_ID,
-    description="Incremental load with SCD2: PostgreSQL → ODS → DWD",
+    description="Full ETL pipeline: Source → ODS → DWD → DWS",
     default_args=default_args,
     schedule="@daily",
     start_date=datetime(2026, 11, 1),
     catchup=False,
-    tags=["demo", "incremental", "scd2"],
+    tags=["demo", "etl", "scd2", "marts"],
 ) as dag:
     
     extract_task = PythonOperator(
@@ -65,5 +73,10 @@ with DAG(
         python_callable=apply_scd2_transformation,
     )
     
-    # Зависимость: extract → transform
-    extract_task >> transform_task
+    mart_task = PythonOperator(
+        task_id="load_marts",
+        python_callable=load_data_marts,
+    )
+    
+    # Цепочка зависимостей
+    extract_task >> transform_task >> mart_task
